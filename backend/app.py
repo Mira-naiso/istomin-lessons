@@ -1,7 +1,7 @@
 import os
 import psycopg2
 import redis
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, redirect, url_for, render_template_string
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
@@ -26,52 +26,77 @@ def get_pg_conn():
 
 r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
 
+HTML_REGISTER = """
+<h2>Регистрация</h2>
+<form method="post" action="/register">
+  Email: <input type="email" name="email" required><br>
+  Name: <input type="text" name="name" required><br>
+  <button type="submit">Зарегистрироваться</button>
+</form>
+<a href="/login-page">Войти</a>
+"""
+
+HTML_LOGIN = """
+<h2>Вход</h2>
+<form method="post" action="/login">
+  Email: <input type="email" name="email" required><br>
+  Name: <input type="text" name="name" required><br>
+  <button type="submit">Войти</button>
+</form>
+<a href="/">Регистрация</a>
+"""
+
+@app.route("/")
+def index():
+    return render_template_string(HTML_REGISTER)
+
+@app.route("/login-page")
+def login_page():
+    return render_template_string(HTML_LOGIN)
+
 @app.route("/health")
 def health():
     return {"status": "ok"}
 
 @app.route("/register", methods=["POST"])
 def register():
-    data = request.json
-    username = data.get("username")
-    password = data.get("password")
-
-    password_hash = generate_password_hash(password)
+    email = request.form.get("email")
+    name = request.form.get("name")
 
     conn = get_pg_conn()
     cur = conn.cursor()
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
-            username TEXT UNIQUE,
-            password_hash TEXT
+            email TEXT UNIQUE,
+            name TEXT
         )
     """)
-    cur.execute("INSERT INTO users (username, password_hash) VALUES (%s, %s)", (username, password_hash))
+    cur.execute("INSERT INTO users (email, name) VALUES (%s, %s)", (email, name))
     conn.commit()
     cur.close()
     conn.close()
 
-    return jsonify({"status": "registered"})
+    return "<p>Успешно зарегистрирован!</p><a href='/login-page'>Войти</a>"
 
 @app.route("/login", methods=["POST"])
 def login():
-    data = request.json
-    username = data.get("username")
-    password = data.get("password")
+    email = request.form.get("email")
+    name = request.form.get("name")
 
     conn = get_pg_conn()
     cur = conn.cursor()
-    cur.execute("SELECT password_hash FROM users WHERE username=%s", (username,))
+    cur.execute("SELECT name FROM users WHERE email=%s", (email,))
     row = cur.fetchone()
     cur.close()
     conn.close()
 
-    if not row:
-        return jsonify({"error": "user not found"}), 404
+    if not row or row[0] != name:
+        return "<p>Неверные данные</p><a href='/login-page'>Попробовать снова</a>"
 
-    if not check_password_hash(row[0], password):
-        return jsonify({"error": "invalid password"}), 403
+    r.set(f"session:{email}", "logged_in", ex=3600)
+    return "<p>Успешный вход!</p><a href='/'>На главную</a>"
 
-    r.set(f"session:{username}", "logged_in", ex=3600)
-    return jsonify({"status": "logged_in"})
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
